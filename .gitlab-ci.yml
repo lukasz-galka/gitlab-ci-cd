@@ -1,0 +1,57 @@
+stages:
+  - install
+  - test
+  - build
+  - dockerize
+  - deploy
+
+install:
+  stage: install
+  image: node:6.9.5
+  script:
+    - npm install --silent
+  artifacts:
+    paths:
+      - node_modules/
+
+test:
+  stage: test
+  image: node:6.9.5
+  script:
+    - node_modules/.bin/ng test --single-run --no-progress
+  dependencies:
+    - install
+
+build:
+  stage: build
+  image: node:6.9.5
+  script:
+    - node_modules/.bin/ng build --prod --no-progress
+  dependencies:
+    - install
+  artifacts:
+    paths:
+      - dist/
+      - conf.d/
+
+dockerize:
+  stage: dockerize
+  image: gitlab/dind  
+  script:
+    - docker login -u lukaszgalka -p $GITLAB_PASS registry.gitlab.com
+    - docker build -t $CI_REGISTRY_IMAGE .
+    - docker push $CI_REGISTRY_IMAGE:latest
+    - docker tag $CI_REGISTRY_IMAGE $CI_REGISTRY_IMAGE:$CI_BUILD_REF
+    - docker push $CI_REGISTRY_IMAGE:$CI_BUILD_REF
+
+deploy:
+  stage: deploy
+  image: kroniak/ssh-client
+  script:
+    - eval $(ssh-agent -s)
+    - ssh-add <(echo "$SSH_PRIVATE_KEY")
+    - mkdir -p ~/.ssh
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+    - scp docker-compose.yml ec2-user@$SERVER_IP:/home/ec2-user
+    - ssh ec2-user@$SERVER_IP "docker login -u lukaszgalka -p $GITLAB_PASS registry.gitlab.com; docker pull $CI_REGISTRY_IMAGE; docker-compose -f docker-compose.yml up -d;"
+    - ssh ec2-user@$SERVER_IP '$(docker images | grep "<none>" | awk "{print \$3}") | xargs -r docker rmi -f'
